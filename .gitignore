@@ -1,0 +1,7 @@
+.vscode
+split_pdfs
+*.pdf
+PdfToMarkdown.py
+SplitByBookmark.py
+output/
+PdfToMarkdown.py

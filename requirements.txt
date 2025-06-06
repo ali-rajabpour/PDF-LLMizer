@@ -1,0 +1,19 @@
+# Requirements for PDF processing scripts
+# Last updated: 2025-06-06
+
+# Main PDF processing library (required by both scripts)
+pymupdf>=1.22.0
+
+# Additional dependencies for PdfToMarkdown.py
+# (pymupdf is the only required package, but we'll list other imports for completeness)
+# Standard library imports used (no need to install):
+# - os
+# - re
+# - argparse
+# - pathlib
+# - typing
+# - json
+# - logging
+
+# To install all requirements, run:
+# pip install -r requirements.txt
