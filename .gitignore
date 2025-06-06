@@ -5,3 +5,4 @@ PdfToMarkdown.py
 SplitByBookmark.py
 output/
 PdfToMarkdown.py
+.DS_Store
