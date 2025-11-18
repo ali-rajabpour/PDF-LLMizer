@@ -10,7 +10,7 @@ import re
 import argparse
 import fitz  # PyMuPDF
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import logging
 
 # Configure logging
@@ -100,6 +100,75 @@ class PdfSplitter:
             
         except Exception as e:
             logger.error(f"Error splitting PDF: {str(e)}")
+            return []
+        finally:
+            if hasattr(self, 'doc') and self.doc:
+                self.doc.close()
+    
+    def process_whole_pdf(self) -> List[Dict]:
+        """Process the entire PDF as a single file (no splitting)."""
+        try:
+            self.doc = fitz.open(self.pdf_path)
+            filename = self.pdf_path.stem
+            
+            output_filename = f"{self.clean_filename(filename)}.pdf"
+            output_path = self.pdf_output_dir / output_filename
+            
+            # Save the entire PDF
+            self.doc.save(output_path)
+            logger.info(f"Created: {output_path}")
+            
+            return [{
+                'path': str(output_path),
+                'title': filename,
+                'page': 1,
+                'index': 1
+            }]
+            
+        except Exception as e:
+            logger.error(f"Error processing whole PDF: {str(e)}")
+            return []
+        finally:
+            if hasattr(self, 'doc') and self.doc:
+                self.doc.close()
+    
+    def split_by_page_ranges(self, page_ranges: List[Tuple[int, int, str]]) -> List[Dict]:
+        """Split PDF by custom page ranges."""
+        try:
+            self.doc = fitz.open(self.pdf_path)
+            created_files = []
+            
+            for i, (start_page, end_page, title) in enumerate(page_ranges, 1):
+                new_doc = fitz.open()
+                
+                try:
+                    # Adjust for 0-based indexing
+                    start = max(0, start_page - 1)
+                    end = min(end_page - 1, len(self.doc) - 1)
+                    
+                    new_doc.insert_pdf(self.doc, from_page=start, to_page=end)
+                    clean_title = self.clean_filename(title)
+                    output_filename = f"{i:03d}_{clean_title}.pdf"
+                    output_path = self.pdf_output_dir / output_filename
+                    
+                    new_doc.save(output_path)
+                    logger.info(f"Created: {output_path}")
+                    
+                    created_files.append({
+                        'path': str(output_path),
+                        'title': title,
+                        'page': start_page,
+                        'index': i
+                    })
+                except Exception as e:
+                    logger.error(f"Error processing page range '{title}': {str(e)}")
+                finally:
+                    new_doc.close()
+            
+            return created_files
+            
+        except Exception as e:
+            logger.error(f"Error splitting PDF by page ranges: {str(e)}")
             return []
         finally:
             if hasattr(self, 'doc') and self.doc:
@@ -219,13 +288,41 @@ def print_header():
 """
     print(header)
 
-def process_single_pdf(pdf_path: str, output_dir: str, level: int) -> List[Dict]:
+def process_single_pdf(pdf_path: str, output_dir: str, level: int, mode: str = 'bookmarks', separate_folders: bool = True) -> List[Dict]:
     """Process a single PDF file."""
-    logger.info(f"Splitting {pdf_path} by level {level} bookmarks...")
-    splitter = PdfSplitter(pdf_path, output_dir, level)
-    return splitter.split_by_bookmarks()
+    logger.info(f"Processing {pdf_path} in {mode} mode...")
+    
+    # Determine the actual output directory based on separate_folders setting
+    if separate_folders:
+        pdf_name = Path(pdf_path).stem
+        actual_output_dir = Path(output_dir) / pdf_name
+    else:
+        actual_output_dir = output_dir
+    
+    splitter = PdfSplitter(pdf_path, str(actual_output_dir), level)
+    
+    if mode == 'bookmarks':
+        # Try bookmarks first
+        result = splitter.split_by_bookmarks()
+        if result:
+            return result
+        else:
+            # Fallback to whole PDF if no bookmarks found
+            logger.warning("No bookmarks found, falling back to whole PDF processing")
+            return splitter.process_whole_pdf()
+    elif mode == 'whole':
+        return splitter.process_whole_pdf()
+    elif mode == 'pages':
+        # For now, split into individual pages
+        doc = fitz.open(pdf_path)
+        page_ranges = [(i+1, i+1, f"page_{i+1}") for i in range(len(doc))]
+        doc.close()
+        return splitter.split_by_page_ranges(page_ranges)
+    else:
+        logger.error(f"Unknown processing mode: {mode}")
+        return []
 
-def process_folder(folder_path: str, output_dir: str, level: int) -> List[Dict]:
+def process_folder(folder_path: str, output_dir: str, level: int, mode: str = 'bookmarks', separate_folders: bool = True) -> List[Dict]:
     """Process all PDF files in a folder."""
     folder = Path(folder_path).expanduser().resolve()
     pdf_files = list(folder.glob("*.pdf")) + list(folder.glob("*.PDF"))
@@ -239,9 +336,8 @@ def process_folder(folder_path: str, output_dir: str, level: int) -> List[Dict]:
     
     for pdf_file in pdf_files:
         logger.info(f"\nProcessing: {pdf_file.name}")
-        # Create a subfolder for each PDF's output
-        pdf_output_dir = Path(output_dir) / pdf_file.stem
-        created_files = process_single_pdf(str(pdf_file), str(pdf_output_dir), level)
+        # Process each PDF with the specified mode and folder structure
+        created_files = process_single_pdf(str(pdf_file), output_dir, level, mode, separate_folders)
         all_created_files.extend(created_files)
     
     return all_created_files
@@ -308,8 +404,17 @@ def main():
                       help='Base output directory (default: ./output)')
     parser.add_argument('-l', '--level', type=int, default=1,
                       help='Bookmark level to split on (1=top level, 2=second level, etc.)')
+    parser.add_argument('-m', '--mode', type=str, default='bookmarks', choices=['bookmarks', 'whole', 'pages'],
+                      help='Processing mode: bookmarks (split by bookmarks), whole (process entire PDF), pages (split into individual pages) (default: bookmarks)')
+    parser.add_argument('--separate-folders', action='store_true', default=True,
+                      help='Create separate folders for each PDF (default: True)')
+    parser.add_argument('--combined-folder', action='store_true', default=False,
+                      help='Put all output in the same folder (overrides --separate-folders)')
     
     args = parser.parse_args()
+    
+    # Determine folder structure preference
+    separate_folders = not args.combined_folder  # If combined-folder is True, separate_folders should be False
     
     # Determine if input is a file or folder
     input_path = Path(args.input_path).expanduser().resolve()
@@ -325,7 +430,7 @@ def main():
             logger.error(f"Input file is not a PDF: {args.input_path}")
             return 1
         
-        created_files = process_single_pdf(str(input_path), args.output, args.level)
+        created_files = process_single_pdf(str(input_path), args.output, args.level, args.mode, separate_folders)
         
         if not created_files:
             logger.error("No files were created. Exiting.")
@@ -335,7 +440,7 @@ def main():
         
     elif input_path.is_dir():
         # Folder containing PDFs
-        created_files = process_folder(str(input_path), args.output, args.level)
+        created_files = process_folder(str(input_path), args.output, args.level, args.mode, separate_folders)
         
         if not created_files:
             logger.error("No files were created. Exiting.")
