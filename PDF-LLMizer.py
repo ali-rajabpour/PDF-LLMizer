@@ -10,7 +10,7 @@ import re
 import argparse
 import fitz  # PyMuPDF
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict
 import logging
 
 # Configure logging
@@ -219,33 +219,41 @@ def print_header():
 """
     print(header)
 
-def main():
-    print_header()
-    parser = argparse.ArgumentParser(description='Process PDF files by splitting them by bookmarks and converting to Markdown.')
+def process_single_pdf(pdf_path: str, output_dir: str, level: int) -> List[Dict]:
+    """Process a single PDF file."""
+    logger.info(f"Splitting {pdf_path} by level {level} bookmarks...")
+    splitter = PdfSplitter(pdf_path, output_dir, level)
+    return splitter.split_by_bookmarks()
+
+def process_folder(folder_path: str, output_dir: str, level: int) -> List[Dict]:
+    """Process all PDF files in a folder."""
+    folder = Path(folder_path).expanduser().resolve()
+    pdf_files = list(folder.glob("*.pdf")) + list(folder.glob("*.PDF"))
     
-    # Required arguments
-    parser.add_argument('input_pdf', type=str, help='Path to the input PDF file')
+    if not pdf_files:
+        logger.error(f"No PDF files found in folder: {folder_path}")
+        return []
     
-    # Optional arguments
-    parser.add_argument('-o', '--output', type=str, default='output',
-                      help='Base output directory (default: ./output)')
-    parser.add_argument('-l', '--level', type=int, default=1,
-                      help='Bookmark level to split on (1=top level, 2=second level, etc.)')
+    logger.info(f"Found {len(pdf_files)} PDF files in folder: {folder_path}")
+    all_created_files = []
     
-    args = parser.parse_args()
+    for pdf_file in pdf_files:
+        logger.info(f"\nProcessing: {pdf_file.name}")
+        # Create a subfolder for each PDF's output
+        pdf_output_dir = Path(output_dir) / pdf_file.stem
+        created_files = process_single_pdf(str(pdf_file), str(pdf_output_dir), level)
+        all_created_files.extend(created_files)
     
-    # Step 1: Split the PDF by bookmarks
-    logger.info(f"Splitting {args.input_pdf} by level {args.level} bookmarks...")
-    splitter = PdfSplitter(args.input_pdf, args.output, args.level)
-    created_files = splitter.split_by_bookmarks()
-    
+    return all_created_files
+
+def convert_files_to_markdown(created_files: List[Dict], output_dir: str) -> int:
+    """Convert created PDF files to Markdown format."""
     if not created_files:
-        logger.error("No files were created. Exiting.")
-        return 1
+        logger.error("No files were created. Skipping conversion.")
+        return 0
     
-    # Step 2: Convert each split PDF to Markdown with progress bar
     logger.info("\nConverting split PDFs to Markdown...")
-    converter = PdfToMarkdown(args.output)
+    converter = PdfToMarkdown(output_dir)
     
     # Initialize progress tracking
     total_files = len(created_files)
@@ -285,6 +293,59 @@ def main():
     print(f"Successfully converted: {success_count}/{total_files} files")
     print(f"Total time: {time.time() - start_time:.1f} seconds")
     print("="*50)
+    
+    return success_count
+
+def main():
+    print_header()
+    parser = argparse.ArgumentParser(description='Process PDF files by splitting them by bookmarks and converting to Markdown.')
+    
+    # Required arguments - now accepts file or folder
+    parser.add_argument('input_path', type=str, help='Path to the input PDF file or folder containing PDFs')
+    
+    # Optional arguments
+    parser.add_argument('-o', '--output', type=str, default='output',
+                      help='Base output directory (default: ./output)')
+    parser.add_argument('-l', '--level', type=int, default=1,
+                      help='Bookmark level to split on (1=top level, 2=second level, etc.)')
+    
+    args = parser.parse_args()
+    
+    # Determine if input is a file or folder
+    input_path = Path(args.input_path).expanduser().resolve()
+    
+    if not input_path.exists():
+        logger.error(f"Input path does not exist: {args.input_path}")
+        return 1
+    
+    # Process based on input type
+    if input_path.is_file():
+        # Single PDF file
+        if not input_path.suffix.lower() == '.pdf':
+            logger.error(f"Input file is not a PDF: {args.input_path}")
+            return 1
+        
+        created_files = process_single_pdf(str(input_path), args.output, args.level)
+        
+        if not created_files:
+            logger.error("No files were created. Exiting.")
+            return 1
+        
+        convert_files_to_markdown(created_files, args.output)
+        
+    elif input_path.is_dir():
+        # Folder containing PDFs
+        created_files = process_folder(str(input_path), args.output, args.level)
+        
+        if not created_files:
+            logger.error("No files were created. Exiting.")
+            return 1
+        
+        convert_files_to_markdown(created_files, args.output)
+        
+    else:
+        logger.error(f"Input path is neither a file nor a directory: {args.input_path}")
+        return 1
     
     logger.info(f"Processing complete. Files saved to: {args.output}")
     return 0
